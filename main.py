@@ -1,22 +1,30 @@
 from typing import Any, List, Dict, Optional
 import os
 import sys
+import logging
 import urllib3
 from mcp.server.fastmcp import FastMCP
 import requests
+
+# Configure logging to stderr so it appears in container logs
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("unifi-mcp")
 
 # Suppress InsecureRequestWarning for self-signed UniFi certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Build metadata
 BUILD_TIMESTAMP = os.getenv("BUILD_TIMESTAMP", "unknown")
-BUILD_VERSION = os.getenv("BUILD_VERSION", "unknown")[:7]  # short SHA
+BUILD_VERSION = os.getenv("BUILD_VERSION", "unknown")[:7]
 
 # Configuration
 UNIFI_API_KEY = os.getenv("UNIFI_API_KEY", "CHANGEME")
 SITE_MANAGER_BASE_URL = "https://api.ui.com"
 
-# Local UDM access for devices/clients (optional)
 UNIFI_GATEWAY_HOST = os.getenv("UNIFI_GATEWAY_HOST", "")
 UNIFI_GATEWAY_PORT = os.getenv("UNIFI_GATEWAY_PORT", "443")
 
@@ -46,6 +54,8 @@ def print_banner():
 
 
 print_banner()
+log.info(f"API key configured: {UNIFI_API_KEY[:8]}...")
+log.info(f"Gateway host: '{UNIFI_GATEWAY_HOST}'")
 
 # Initialize FastMCP server
 mcp = FastMCP("unifi", host=MCP_HOST, port=MCP_PORT)
@@ -57,16 +67,17 @@ def site_manager_request(
     params: Optional[Dict[str, Any]] = None,
     data: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Make a request to the UniFi Site Manager cloud API."""
     url = f"{SITE_MANAGER_BASE_URL}/{path.lstrip('/')}"
     headers = {
         "X-API-KEY": UNIFI_API_KEY,
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+    log.debug(f"Site Manager request: {method} {url} params={params}")
     response = requests.request(
         method, url, headers=headers, params=params, json=data, verify=True
     )
+    log.debug(f"Response: {response.status_code} {response.text[:200]}")
     response.raise_for_status()
     return response.json()
 
@@ -77,11 +88,8 @@ def local_request(
     params: Optional[Dict[str, Any]] = None,
     data: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Make a request to the local UDM Network Application API."""
     if not UNIFI_GATEWAY_HOST:
-        raise ValueError(
-            "UNIFI_GATEWAY_HOST is not set. Local UDM access is required for devices/clients."
-        )
+        raise ValueError("UNIFI_GATEWAY_HOST is not set.")
     base_url = f"https://{UNIFI_GATEWAY_HOST}:{UNIFI_GATEWAY_PORT}/proxy/network/integration"
     url = f"{base_url}/{path.lstrip('/')}"
     headers = {
@@ -89,15 +97,16 @@ def local_request(
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+    log.debug(f"Local request: {method} {url} params={params}")
     response = requests.request(
         method, url, headers=headers, params=params, json=data, verify=False
     )
+    log.debug(f"Response: {response.status_code} {response.text[:200]}")
     response.raise_for_status()
     return response.json()
 
 
 def paginate_site_manager(path: str, params: Optional[Dict] = None) -> List[Dict]:
-    """Paginate through Site Manager API results."""
     results = []
     p = {"limit": 200, "offset": 0, **(params or {})}
     while True:
@@ -112,7 +121,6 @@ def paginate_site_manager(path: str, params: Optional[Dict] = None) -> List[Dict
 
 
 def paginate_local(path: str, params: Optional[Dict] = None) -> List[Dict]:
-    """Paginate through local UDM API results."""
     results = []
     p = {"limit": 200, "offset": 0, **(params or {})}
     while True:
@@ -133,12 +141,14 @@ def paginate_local(path: str, params: Optional[Dict] = None) -> List[Dict]:
 @mcp.tool()
 async def get_hosts() -> List[Dict[str, Any]]:
     """Get all UniFi consoles (hosts) registered to this account."""
+    log.info("Tool called: get_hosts")
     return paginate_site_manager("/v1/hosts")
 
 
 @mcp.tool()
 async def get_sites() -> List[Dict[str, Any]]:
     """Get all UniFi sites across all consoles."""
+    log.info("Tool called: get_sites")
     return paginate_site_manager("/v1/sites")
 
 
@@ -150,11 +160,12 @@ async def get_site_devices(host_id: str) -> List[Dict[str, Any]]:
     Args:
         host_id: The host ID from get_hosts().
     """
+    log.info(f"Tool called: get_site_devices host_id={host_id}")
     return paginate_site_manager("/v1/devices", params={"hostId": host_id})
 
 
 # ---------------------------------------------------------------------------
-# Tools -- Local UDM API (requires UNIFI_GATEWAY_HOST to be set)
+# Tools -- Local UDM API
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -163,6 +174,7 @@ async def get_local_sites() -> List[Dict[str, Any]]:
     Get all sites from the local UDM Network Application.
     Requires UNIFI_GATEWAY_HOST environment variable to be set.
     """
+    log.info("Tool called: get_local_sites")
     return paginate_local("/v1/sites")
 
 
@@ -175,6 +187,7 @@ async def get_local_devices(site_id: str) -> List[Dict[str, Any]]:
     Args:
         site_id: The site ID from get_local_sites().
     """
+    log.info(f"Tool called: get_local_devices site_id={site_id}")
     return paginate_local(f"/v1/sites/{site_id}/devices")
 
 
@@ -187,6 +200,7 @@ async def get_local_clients(site_id: str) -> List[Dict[str, Any]]:
     Args:
         site_id: The site ID from get_local_sites().
     """
+    log.info(f"Tool called: get_local_clients site_id={site_id}")
     return paginate_local(f"/v1/sites/{site_id}/clients")
 
 
@@ -200,6 +214,7 @@ async def get_local_device_stats(site_id: str, device_id: str) -> Dict[str, Any]
         site_id: The site ID from get_local_sites().
         device_id: The device ID from get_local_devices().
     """
+    log.info(f"Tool called: get_local_device_stats site_id={site_id} device_id={device_id}")
     resp = local_request(f"/v1/sites/{site_id}/devices/{device_id}")
     return resp.get("data", resp)
 
