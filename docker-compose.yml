@@ -1,0 +1,13 @@
+services:
+  mcp-server-unifi:
+    build: .
+    container_name: mcp-server-unifi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - UNIFI_API_KEY=${UNIFI_API_KEY}
+      - UNIFI_GATEWAY_HOST=${UNIFI_GATEWAY_HOST:-192.168.1.1}
+      - UNIFI_GATEWAY_PORT=${UNIFI_GATEWAY_PORT:-443}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
