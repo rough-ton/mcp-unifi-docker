@@ -14,9 +14,11 @@ BUILD_VERSION = os.getenv("BUILD_VERSION", "unknown")[:7]  # short SHA
 
 # Configuration
 UNIFI_API_KEY = os.getenv("UNIFI_API_KEY", "CHANGEME")
-UNIFI_GATEWAY_HOST = os.getenv("UNIFI_GATEWAY_HOST", "api.ui.com")
+SITE_MANAGER_BASE_URL = "https://api.ui.com"
+
+# Local UDM access for devices/clients (optional)
+UNIFI_GATEWAY_HOST = os.getenv("UNIFI_GATEWAY_HOST", "")
 UNIFI_GATEWAY_PORT = os.getenv("UNIFI_GATEWAY_PORT", "443")
-UNIFI_GATEWAY_BASE_URL = f"https://{UNIFI_GATEWAY_HOST}:{UNIFI_GATEWAY_PORT}"
 
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
@@ -49,17 +51,43 @@ print_banner()
 mcp = FastMCP("unifi", host=MCP_HOST, port=MCP_PORT)
 
 
-def unifi_request(
+def site_manager_request(
     path: str,
-    method: str,
+    method: str = "GET",
     params: Optional[Dict[str, Any]] = None,
     data: Optional[Dict[str, Any]] = None,
-):
-    """Make a request to the UniFi API."""
-    url = f"{UNIFI_GATEWAY_BASE_URL}/{path}"
+) -> Any:
+    """Make a request to the UniFi Site Manager cloud API."""
+    url = f"{SITE_MANAGER_BASE_URL}/{path.lstrip('/')}"
     headers = {
+        "X-API-KEY": UNIFI_API_KEY,
+        "Accept": "application/json",
         "Content-Type": "application/json",
-        "X-API-Key": UNIFI_API_KEY,
+    }
+    response = requests.request(
+        method, url, headers=headers, params=params, json=data, verify=True
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def local_request(
+    path: str,
+    method: str = "GET",
+    params: Optional[Dict[str, Any]] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Make a request to the local UDM Network Application API."""
+    if not UNIFI_GATEWAY_HOST:
+        raise ValueError(
+            "UNIFI_GATEWAY_HOST is not set. Local UDM access is required for devices/clients."
+        )
+    base_url = f"https://{UNIFI_GATEWAY_HOST}:{UNIFI_GATEWAY_PORT}/proxy/network/integration"
+    url = f"{base_url}/{path.lstrip('/')}"
+    headers = {
+        "X-API-KEY": UNIFI_API_KEY,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
     }
     response = requests.request(
         method, url, headers=headers, params=params, json=data, verify=False
@@ -68,94 +96,111 @@ def unifi_request(
     return response.json()
 
 
-# ---------------------------------------------------------------------------
-# Resources
-# ---------------------------------------------------------------------------
-
-@mcp.resource("sites://")
-async def list_sites() -> List[Dict[str, Any]]:
-    """List all sites in the UniFi controller."""
-    sites = []
-    params = {"limit": 200, "offset": 0}
+def paginate_site_manager(path: str, params: Optional[Dict] = None) -> List[Dict]:
+    """Paginate through Site Manager API results."""
+    results = []
+    p = {"limit": 200, "offset": 0, **(params or {})}
     while True:
-        resp = unifi_request("/v1/sites", "GET", params=params)
-        sites.extend(resp["data"])
-        if resp["count"] != resp["limit"] or resp["totalCount"] <= len(sites):
+        resp = site_manager_request(path, params=p)
+        data = resp.get("data", [])
+        results.extend(data)
+        total = resp.get("totalCount", len(data))
+        if len(results) >= total or len(data) < p["limit"]:
             break
-        params["offset"] += resp["limit"]
-    return sites
+        p["offset"] += p["limit"]
+    return results
 
 
-@mcp.resource("sites://{site_id}/devices")
-async def list_devices(site_id: str) -> List[Dict[str, Any]]:
-    """List all adopted devices in a UniFi site."""
-    devices = []
-    params = {"limit": 200, "offset": 0}
+def paginate_local(path: str, params: Optional[Dict] = None) -> List[Dict]:
+    """Paginate through local UDM API results."""
+    results = []
+    p = {"limit": 200, "offset": 0, **(params or {})}
     while True:
-        resp = unifi_request(f"/v1/sites/{site_id}/devices", "GET", params=params)
-        devices.extend(resp["data"])
-        if resp["count"] != resp["limit"] or resp["totalCount"] <= len(devices):
+        resp = local_request(path, params=p)
+        data = resp.get("data", [])
+        results.extend(data)
+        total = resp.get("totalCount", len(data))
+        if len(results) >= total or len(data) < p["limit"]:
             break
-        params["offset"] += resp["limit"]
-    return devices
-
-
-@mcp.resource("sites://{site_id}/clients")
-async def list_clients(site_id: str) -> List[Dict[str, Any]]:
-    """List all connected clients in a UniFi site."""
-    clients = []
-    params = {"limit": 200, "offset": 0}
-    while True:
-        resp = unifi_request(f"/v1/sites/{site_id}/clients", "GET", params=params)
-        clients.extend(resp["data"])
-        if resp["count"] != resp["limit"] or resp["totalCount"] <= len(clients):
-            break
-        params["offset"] += resp["limit"]
-    return clients
+        p["offset"] += p["limit"]
+    return results
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# Tools -- Site Manager API (cloud)
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def get_hosts() -> List[Dict[str, Any]]:
+    """Get all UniFi consoles (hosts) registered to this account."""
+    return paginate_site_manager("/v1/hosts")
+
 
 @mcp.tool()
 async def get_sites() -> List[Dict[str, Any]]:
-    """Get all UniFi sites managed by this controller."""
-    return await list_sites()
+    """Get all UniFi sites across all consoles."""
+    return paginate_site_manager("/v1/sites")
 
 
 @mcp.tool()
-async def get_devices(site_id: str) -> List[Dict[str, Any]]:
+async def get_site_devices(host_id: str) -> List[Dict[str, Any]]:
     """
-    Get all adopted devices (APs, switches, gateways) for a given site.
+    Get devices for a specific host via the Site Manager API.
 
     Args:
-        site_id: The ID of the UniFi site.
+        host_id: The host ID from get_hosts().
     """
-    return await list_devices(site_id)
+    return paginate_site_manager("/v1/devices", params={"hostId": host_id})
+
+
+# ---------------------------------------------------------------------------
+# Tools -- Local UDM API (requires UNIFI_GATEWAY_HOST to be set)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def get_local_sites() -> List[Dict[str, Any]]:
+    """
+    Get all sites from the local UDM Network Application.
+    Requires UNIFI_GATEWAY_HOST environment variable to be set.
+    """
+    return paginate_local("/v1/sites")
 
 
 @mcp.tool()
-async def get_clients(site_id: str) -> List[Dict[str, Any]]:
+async def get_local_devices(site_id: str) -> List[Dict[str, Any]]:
     """
-    Get all currently connected clients for a given site.
+    Get all adopted devices for a site from the local UDM.
+    Requires UNIFI_GATEWAY_HOST environment variable to be set.
 
     Args:
-        site_id: The ID of the UniFi site.
+        site_id: The site ID from get_local_sites().
     """
-    return await list_clients(site_id)
+    return paginate_local(f"/v1/sites/{site_id}/devices")
 
 
 @mcp.tool()
-async def get_device_stats(site_id: str, device_id: str) -> Dict[str, Any]:
+async def get_local_clients(site_id: str) -> List[Dict[str, Any]]:
     """
-    Get detailed stats for a specific device.
+    Get all connected clients for a site from the local UDM.
+    Requires UNIFI_GATEWAY_HOST environment variable to be set.
 
     Args:
-        site_id: The ID of the UniFi site.
-        device_id: The ID of the device.
+        site_id: The site ID from get_local_sites().
     """
-    resp = unifi_request(f"/v1/sites/{site_id}/devices/{device_id}", "GET")
+    return paginate_local(f"/v1/sites/{site_id}/clients")
+
+
+@mcp.tool()
+async def get_local_device_stats(site_id: str, device_id: str) -> Dict[str, Any]:
+    """
+    Get detailed stats for a specific device from the local UDM.
+    Requires UNIFI_GATEWAY_HOST environment variable to be set.
+
+    Args:
+        site_id: The site ID from get_local_sites().
+        device_id: The device ID from get_local_devices().
+    """
+    resp = local_request(f"/v1/sites/{site_id}/devices/{device_id}")
     return resp.get("data", resp)
 
 
