@@ -1,5 +1,6 @@
 from typing import Any, List, Dict, Optional
 import os
+import sys
 import urllib3
 from mcp.server.fastmcp import FastMCP
 import requests
@@ -7,14 +8,42 @@ import requests
 # Suppress InsecureRequestWarning for self-signed UniFi certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# Build metadata
+BUILD_TIMESTAMP = os.getenv("BUILD_TIMESTAMP", "unknown")
+BUILD_VERSION = os.getenv("BUILD_VERSION", "unknown")[:7]  # short SHA
+
 # Configuration
 UNIFI_API_KEY = os.getenv("UNIFI_API_KEY", "CHANGEME")
-UNIFI_GATEWAY_HOST = os.getenv("UNIFI_GATEWAY_HOST", "192.168.1.1")
+UNIFI_GATEWAY_HOST = os.getenv("UNIFI_GATEWAY_HOST", "api.ui.com")
 UNIFI_GATEWAY_PORT = os.getenv("UNIFI_GATEWAY_PORT", "443")
 UNIFI_GATEWAY_BASE_URL = f"https://{UNIFI_GATEWAY_HOST}:{UNIFI_GATEWAY_PORT}"
 
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
+
+
+def print_banner():
+    banner = f"""
+╔══════════════════════════════════════════════╗
+║                                              ║
+║   ██╗   ██╗███╗   ██╗██╗███████╗██╗         ║
+║   ██║   ██║████╗  ██║██║██╔════╝██║         ║
+║   ██║   ██║██╔██╗ ██║██║█████╗  ██║         ║
+║   ██║   ██║██║╚██╗██║██║██╔══╝  ██║         ║
+║   ╚██████╔╝██║ ╚████║██║██║     ██║         ║
+║    ╚═════╝ ╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝         ║
+║                                              ║
+║        MCP Server for UniFi Networks         ║
+║                                              ║
+║  Build : {BUILD_VERSION:<36} ║
+║  Built : {BUILD_TIMESTAMP:<36} ║
+║                                              ║
+╚══════════════════════════════════════════════╝
+"""
+    print(banner, file=sys.stderr)
+
+
+print_banner()
 
 # Initialize FastMCP server
 mcp = FastMCP("unifi", host=MCP_HOST, port=MCP_PORT)

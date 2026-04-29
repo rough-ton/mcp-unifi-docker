@@ -28,3 +28,6 @@ jobs:
           context: .
           push: true
           tags: 10.0.20.100:5000/mcp-unifi-docker:latest
+          build-args: |
+            BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}
+            BUILD_VERSION=${{ github.sha }}
